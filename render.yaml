@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: club-scout-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:///./scout.db
+      - key: CLUB_NAME
+        value: Paris Saint-Germain
+      - key: CLUB_LEAGUE
+        value: Ligue 1
+      - key: GROQ_API_KEY
+        sync: false

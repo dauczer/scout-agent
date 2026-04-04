@@ -1,0 +1,10 @@
+sqlalchemy
+langchain==0.3.25
+langchain-community==0.3.25
+langchain-groq==0.2.4
+fastapi==0.135.3
+uvicorn[standard]==0.42.0
+python-dotenv
+pandas
+rapidfuzz
+numpy
