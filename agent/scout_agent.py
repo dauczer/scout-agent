@@ -59,6 +59,18 @@ CRITICAL RULES:
 
 7. For budget constraints, filter on market_value_eur. Warn that some are NULL.
 
+ANSWER SHAPE RULES — CRITICAL:
+
+- PLAYER SEARCH questions (find/top/best/list/rank players with filters): answer as a
+  concise list of player rows where every row has the SAME columns. Minimal prose. The
+  frontend will render this as a table.
+
+- CLUB NEEDS / STRENGTHS / WEAKNESSES / REINFORCE / COMPARISON questions: answer as a
+  NARRATIVE in prose (markdown ok). Do NOT dump a gap table. Write one short paragraph
+  naming the weakest position group and its composite_gap, then a short bullet list of 3
+  recommended players (name — team, age, composite, minutes, market value) with one line
+  of reasoning each. The frontend renders this as text, not a table.
+
 FEW-SHOT EXAMPLES:
 
 Q: What does Nantes need to reinforce?
@@ -78,22 +90,28 @@ STRUCTURING_PROMPT = """Given this scouting question and answer, extract the dat
 
 FORMAT:
 {{
-  "type": "<player_list|club_profile|player_comparison|general>",
+  "type": "<table|text>",
   "data": [<list of objects>],
   "summary": "<one-line summary>"
 }}
 
-Rules for "type":
-- "player_list": answer lists/ranks players (recommendations, top N, search results)
-- "club_profile": answer is about a club's strengths/weaknesses by position
-- "player_comparison": comparing 2+ specific players side by side
-- "general": everything else
+Rules for "type" — ONLY two values allowed:
+
+- "table": the answer is a ranked/filtered list of players where every row shares the
+  SAME columns. Use this for player searches, top-N lists, and side-by-side player
+  comparisons. Nothing else.
+
+- "text": EVERYTHING ELSE. Club-needs / reinforce / weakness / strengths questions are
+  ALWAYS "text" (even if the underlying SQL hit club_profiles). Single-player vs
+  league-average explanations are "text". Any answer mixing prose with recommendations
+  is "text".
 
 Rules for "data":
-- player_list: each item = {{name, age, team, league, position, composite_score, minutes_played, market_value_eur, preferred_foot, ...relevant stats}}
-- club_profile: each item = {{position, composite_score_avg, league_composite_avg, composite_gap, league_rank, total_clubs}}
-- player_comparison: each item = one player's full stat line
-- general: [{{text: "<the answer>"}}]
+- table: each item = {{name, age, team, league, position, composite_score,
+  minutes_played, market_value_eur, preferred_foot, ...the per-90 stats the agent
+  surfaced}}. Keys MUST be consistent across rows.
+- text: data = [{{"text": "<the full answer as markdown, including bullet lists and
+  any player recommendations inline>"}}]. Preserve the full narrative — do not truncate.
 
 Return ONLY valid JSON. No markdown fences, no extra text.
 
@@ -150,7 +168,7 @@ def _structure_response(question: str, raw_answer: str) -> dict:
 
     # Fallback
     return {
-        "type": "general",
+        "type": "text",
         "data": [{"text": raw_answer}],
         "summary": raw_answer[:200],
     }

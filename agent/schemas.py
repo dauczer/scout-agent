@@ -7,11 +7,11 @@ from pydantic import BaseModel
 class ScoutResponse(BaseModel):
     """Structured response from the scouting agent.
 
-    type values:
-        "player_list"        — ranked list of players (e.g. recommendations, top N)
-        "club_profile"       — club strengths/weaknesses by position
-        "player_comparison"  — side-by-side comparison of 2+ players
-        "general"            — free-form answer that doesn't fit the above
+    type values (only two):
+        "table" — `data` is a list of homogeneous player row dicts with consistent
+                  keys (player searches, top-N, side-by-side comparisons).
+        "text"  — `data` is `[{"text": "<markdown>"}]`. Used for club-needs diagnostics,
+                  strengths/weaknesses, narrative answers, anything non-tabular.
     """
     type: str
     data: list[dict[str, Any]]
