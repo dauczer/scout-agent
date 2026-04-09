@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, UniqueConstraint
+from sqlalchemy import Column, Index, Integer, String, Float, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -58,6 +58,13 @@ class Player(Base):
 
     __table_args__ = (
         UniqueConstraint("name", "team", "season", name="uq_player_team_season"),
+        # Covers the agent's most common query pattern: filter by team+season+position
+        # then sort by composite_score DESC.
+        # Note: indexes are defined here but only applied to scout.db on next reseed
+        # (Base.metadata.create_all skips existing tables; run seed_all() to rebuild).
+        Index("ix_players_team_season_position", "team", "season", "position"),
+        Index("ix_players_league_season_position_composite",
+              "league", "season", "position", "composite_score"),
     )
 
 
@@ -127,4 +134,5 @@ class ClubProfile(Base):
 
     __table_args__ = (
         UniqueConstraint("club_name", "season", "position", name="uq_club_season_position"),
+        Index("ix_club_profiles_club_season", "club_name", "season"),
     )

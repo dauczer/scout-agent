@@ -1,27 +1,60 @@
-import os
+import asyncio
+import hashlib
+import logging
+import time
+from functools import lru_cache
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from sqlalchemy import text
 
-load_dotenv()
+from agent.scout_agent import scout_query
+from config import settings
+from database.connection import SessionLocal, engine
+from database.models import ClubProfile, Player
 
-SEASON = os.getenv("SEASON", "2425")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
+logger = logging.getLogger("scout.api")
 
+SEASON = settings.season
+
+_api_key_header = APIKeyHeader(name="X-Scout-Key", auto_error=False)
+
+
+def _require_scout_key(key: str | None = Depends(_api_key_header)) -> None:
+    """Dependency that enforces X-Scout-Key on protected routes."""
+    if not settings.scout_api_key:
+        # Key not configured — auth is disabled (useful for local dev).
+        return
+    if key != settings.scout_api_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Scout-Key")
+
+
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Club Scout AI")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=[settings.allowed_origin],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 
 class ScoutRequest(BaseModel):
-    question: str
+    question: str = Field(..., min_length=3, max_length=500)
 
 
 class ScoutResponse(BaseModel):
@@ -31,45 +64,97 @@ class ScoutResponse(BaseModel):
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+@limiter.limit("60/minute")
+def health(request: Request):
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception:
+        logger.exception("health check DB probe failed")
+        db_status = "error"
+
+    status_code = 200 if db_status == "ok" else 503
+    return JSONResponse(
+        content={"status": "ok" if db_status == "ok" else "degraded", "db": db_status},
+        status_code=status_code,
+    )
 
 
 @app.post("/scout", response_model=ScoutResponse)
-def scout(request: ScoutRequest):
-    if not request.question.strip():
+@limiter.limit("10/minute")
+async def scout(request: Request, body: ScoutRequest, _: None = Depends(_require_scout_key)):
+    if not body.question.strip():
         raise HTTPException(status_code=400, detail="question cannot be empty")
 
-    from agent.scout_agent import scout_query
-
+    q_hash = hashlib.sha256(body.question.encode()).hexdigest()[:8]
+    t0 = time.monotonic()
     try:
-        result = scout_query(request.question)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        result = await asyncio.wait_for(
+            asyncio.to_thread(scout_query, body.question),
+            timeout=50,
+        )
+        logger.info("scout ok q=%s latency=%.2fs", q_hash, time.monotonic() - t0)
+    except asyncio.TimeoutError:
+        logger.warning("scout timeout q=%s latency=%.2fs", q_hash, time.monotonic() - t0)
+        raise HTTPException(status_code=504, detail="The scouting query timed out. Please try a simpler question.")
+    except Exception:
+        logger.exception("scout error q=%s latency=%.2fs", q_hash, time.monotonic() - t0)
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
     return ScoutResponse(**result)
 
 
 @app.get("/club-profile/{club_name}")
-def club_profile(club_name: str):
-    from database.connection import SessionLocal
-    from database.models import ClubProfile
-
+@limiter.limit("60/minute")
+def club_profile(request: Request, club_name: str):
     with SessionLocal() as db:
-        profiles = (
+        # Exact case-insensitive match first.
+        exact = (
             db.query(ClubProfile)
             .filter(
-                ClubProfile.club_name.ilike(f"%{club_name}%"),
+                ClubProfile.club_name.ilike(club_name),
                 ClubProfile.season == SEASON,
             )
             .all()
         )
+        if exact:
+            profiles = exact
+        else:
+            # Fall back to substring search for disambiguation.
+            candidates = (
+                db.query(ClubProfile.club_name)
+                .filter(
+                    ClubProfile.club_name.ilike(f"%{club_name}%"),
+                    ClubProfile.season == SEASON,
+                )
+                .distinct()
+                .all()
+            )
+            distinct_names = [r.club_name for r in candidates]
 
-    if not profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No club profile found for '{club_name}'",
-        )
+            if not distinct_names:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No club profile found for '{club_name}'",
+                )
+            if len(distinct_names) > 1:
+                return JSONResponse(
+                    status_code=300,
+                    content={
+                        "detail": f"'{club_name}' matched multiple clubs. Use an exact name.",
+                        "matches": distinct_names,
+                    },
+                )
+            # Exactly one fuzzy match — load its rows.
+            profiles = (
+                db.query(ClubProfile)
+                .filter(
+                    ClubProfile.club_name == distinct_names[0],
+                    ClubProfile.season == SEASON,
+                )
+                .all()
+            )
 
     return {
         "club_name": profiles[0].club_name,
@@ -89,11 +174,9 @@ def club_profile(club_name: str):
     }
 
 
-@app.get("/clubs")
-def clubs():
-    from database.connection import SessionLocal
-    from database.models import Player
-
+@lru_cache(maxsize=1)
+def _clubs_cached() -> list[dict]:
+    """Clubs list never changes between deploys — cache it after the first DB hit."""
     with SessionLocal() as db:
         club_list = (
             db.query(Player.team, Player.league)
@@ -101,8 +184,13 @@ def clubs():
             .order_by(Player.league, Player.team)
             .all()
         )
-
     return [{"name": c.team, "league": c.league} for c in club_list]
+
+
+@app.get("/clubs")
+@limiter.limit("60/minute")
+def clubs(request: Request):
+    return _clubs_cached()
 
 
 # Sortable columns for the /players endpoint
@@ -115,7 +203,9 @@ _SORTABLE = {
 
 
 @app.get("/players")
+@limiter.limit("60/minute")
 def players(
+    request: Request,
     league: Optional[str] = None,
     position: Optional[str] = None,
     team: Optional[str] = None,
@@ -124,9 +214,6 @@ def players(
     limit: int = Query(default=50, ge=1, le=200),
 ):
     """Query players with optional filters. Useful for dashboard tables."""
-    from database.connection import SessionLocal
-    from database.models import Player
-
     if sort not in _SORTABLE:
         raise HTTPException(status_code=400, detail=f"Invalid sort column. Choose from: {sorted(_SORTABLE)}")
 

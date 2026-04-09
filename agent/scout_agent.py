@@ -1,16 +1,12 @@
-import json
-import os
-
-from dotenv import load_dotenv
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_community.utilities import SQLDatabase
 from langchain_groq import ChatGroq
 
-load_dotenv()
+from agent.schemas import ScoutResponse
+from config import settings
 
-CLUB_NAME = os.getenv("CLUB_NAME", "Paris Saint-Germain")
-CLUB_LEAGUE = os.getenv("CLUB_LEAGUE", "Ligue 1")
-DATABASE_URL = os.environ["DATABASE_URL"]
+CLUB_NAME = settings.club_name
+CLUB_LEAGUE = settings.club_league
 
 SYSTEM_PROMPT = f"""You are a football scouting AI for {CLUB_NAME} ({CLUB_LEAGUE}).
 You interact with a {{dialect}} database. Limit queries to at most {{top_k}} results unless the user requests more.
@@ -86,50 +82,41 @@ SQL: SELECT name, age, team, composite_score, tackles_p90, interceptions_p90, pr
 Do NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.).
 """
 
-STRUCTURING_PROMPT = """Given this scouting question and answer, extract the data into JSON.
-
-FORMAT:
-{{
-  "type": "<table|text>",
-  "data": [<list of objects>],
-  "summary": "<one-line summary>"
-}}
+STRUCTURING_PROMPT = """Given this scouting question and raw answer, return a structured response.
 
 Rules for "type" — ONLY two values allowed:
-
-- "table": the answer is a ranked/filtered list of players where every row shares the
-  SAME columns. Use this for player searches, top-N lists, and side-by-side player
-  comparisons. Nothing else.
-
-- "text": EVERYTHING ELSE. Club-needs / reinforce / weakness / strengths questions are
-  ALWAYS "text" (even if the underlying SQL hit club_profiles). Single-player vs
-  league-average explanations are "text". Any answer mixing prose with recommendations
-  is "text".
+- "table": the answer is a ranked/filtered list of players where every row shares the SAME columns.
+  Use this for player searches, top-N lists, and side-by-side player comparisons. Nothing else.
+- "text": EVERYTHING ELSE. Club-needs / reinforce / weakness / strengths questions are ALWAYS
+  "text". Single-player vs league-average explanations are "text". Any answer mixing prose with
+  recommendations is "text".
 
 Rules for "data":
-- table: each item = {{name, age, team, league, position, composite_score,
-  minutes_played, market_value_eur, preferred_foot, ...the per-90 stats the agent
-  surfaced}}. Keys MUST be consistent across rows.
-- text: data = [{{"text": "<the full answer as markdown, including bullet lists and
-  any player recommendations inline>"}}]. Preserve the full narrative — do not truncate.
+- table: each item = {{name, age, team, league, position, composite_score, minutes_played,
+  market_value_eur, preferred_foot, ...the per-90 stats the agent surfaced}}.
+  Keys MUST be consistent across rows.
+- text: data = [{{"text": "<the full answer as markdown, including bullet lists and any player
+  recommendations inline>"}}]. Preserve the full narrative — do not truncate.
 
-Return ONLY valid JSON. No markdown fences, no extra text.
+"summary" is a single sentence summarising the answer.
 
 Question: {question}
 Answer: {answer}"""
 
 
-def _build_llm():
+def _build_llm() -> ChatGroq:
     return ChatGroq(
         model="llama-3.3-70b-versatile",
         temperature=0,
-        api_key=os.getenv("GROQ_API_KEY"),
+        api_key=settings.groq_api_key,
     )
 
 
 def _build_agent():
-    db = SQLDatabase.from_uri(
-        DATABASE_URL,
+    from database.connection import readonly_engine
+
+    db = SQLDatabase(
+        readonly_engine,
         include_tables=["players", "club_profiles", "league_averages"],
     )
     llm = _build_llm()
@@ -140,9 +127,19 @@ def _build_agent():
         prefix=SYSTEM_PROMPT,
         verbose=True,
         max_iterations=12,
+        max_execution_time=30,
     )
 
 
+# Module-level agent singleton.
+# Thread-safety note: _get_agent() uses a simple check-then-set pattern without
+# a lock. Under uvicorn's default single-worker async model this is safe — the
+# event loop is single-threaded and scout_query runs in asyncio.to_thread, so
+# at most one thread initialises the agent (on first request). If you ever run
+# multiple sync workers (e.g. gunicorn -w N), each worker process gets its own
+# interpreter and its own copy of this global, so there is still no shared state.
+# A threading.Lock() would only be needed for multi-threaded sync servers, which
+# this project does not use.
 _agent = None
 
 
@@ -154,28 +151,23 @@ def _get_agent():
 
 
 def _structure_response(question: str, raw_answer: str) -> dict:
-    """Post-process the agent's text output into structured JSON."""
-    llm = _build_llm()
-    prompt = STRUCTURING_PROMPT.format(question=question, answer=raw_answer)
-    response = llm.invoke(prompt)
-    try:
-        parsed = json.loads(response.content)
-        # Validate required keys
-        if "type" in parsed and "data" in parsed and "summary" in parsed:
-            return parsed
-    except (json.JSONDecodeError, AttributeError):
-        pass
+    """Post-process the agent's text output into a validated ScoutResponse.
 
-    # Fallback
-    return {
-        "type": "text",
-        "data": [{"text": raw_answer}],
-        "summary": raw_answer[:200],
-    }
+    Uses with_structured_output so the LLM is constrained to emit valid JSON
+    matching the ScoutResponse schema — no manual JSON parsing or fallback needed.
+    """
+    structured_llm = _build_llm().with_structured_output(ScoutResponse)
+    prompt = STRUCTURING_PROMPT.format(question=question, answer=raw_answer)
+    result: ScoutResponse = structured_llm.invoke(prompt)
+    return result.model_dump()
 
 
 def scout_query(question: str) -> dict:
-    """Run a natural language scouting query. Returns structured JSON dict."""
+    """Run a natural language scouting query. Returns structured JSON dict.
+
+    Blocking — intended to be called via asyncio.to_thread from the async
+    FastAPI handler, which applies a wall-clock timeout via asyncio.wait_for.
+    """
     agent = _get_agent()
     result = agent.invoke({"input": question})
     raw_output = result.get("output", str(result))

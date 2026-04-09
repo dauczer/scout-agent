@@ -2,6 +2,7 @@ services:
   - type: web
     name: club-scout-ai
     runtime: python
+    pythonVersion: "3.12.6"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -12,4 +13,8 @@ services:
       - key: CLUB_LEAGUE
         value: Ligue 1
       - key: GROQ_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGIN
+        sync: false
+      - key: SCOUT_API_KEY
         sync: false

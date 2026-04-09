@@ -22,13 +22,14 @@ from rapidfuzz import fuzz
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from database.connection import SessionLocal, init_db
+from database.constants import DEFAULT_SEASON
 from database.models import ClubProfile, LeagueAverage, Player
 from database.weights import ZSCORE_STATS, compute_composite
 
 logger = logging.getLogger(__name__)
 
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
-SEASON = "2425"
+SEASON = DEFAULT_SEASON
 MIN_MINUTES = 450
 
 # FBref Comp column → canonical league name
@@ -507,6 +508,11 @@ def compute_league_averages() -> None:
             for field in ZSCORE_STATS:
                 values = [getattr(p, field) for p in group if getattr(p, field) is not None]
                 avgs[field] = float(np.mean(values)) if values else 0.0
+                # Population std (ddof=0, numpy default) — deliberate choice.
+                # We treat every player with ≥450 min as the full population for
+                # that league/position group, not a sample drawn from a larger one.
+                # Using ddof=1 (sample std) would inflate std for small groups
+                # (e.g. GKs with ~30 players) and make z-scores harder to interpret.
                 stds[field] = float(np.std(values)) if len(values) > 1 else 0.0
 
             # Compute z-scores and composite for each player

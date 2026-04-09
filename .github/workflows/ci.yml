@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.6"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile check
+        run: python -m compileall -q .
+
+      - name: Lint (ruff)
+        run: |
+          pip install -q ruff
+          ruff check .
+
+      - name: Test
+        env:
+          DATABASE_URL: sqlite:///./scout.db
+          GROQ_API_KEY: test-key-ci
+          ALLOWED_ORIGIN: http://localhost:3000
+        run: pytest -q
+
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt
+        continue-on-error: true
