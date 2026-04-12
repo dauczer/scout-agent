@@ -1,3 +1,5 @@
+import pathlib
+import sqlite3
 from contextlib import contextmanager
 from typing import Generator
 
@@ -6,7 +8,24 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from config import settings
 
-DATABASE_URL: str = settings.database_url
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def _resolve_database_url(url: str) -> str:
+    """Turn a relative SQLite path into an absolute one.
+
+    ``sqlite:///./scout.db`` resolves relative to the *process* cwd, which
+    differs between local dev and Render.  Anchoring to the project root
+    makes the path reliable everywhere.
+    """
+    if url.startswith("sqlite:///") and not url.startswith("sqlite:////"):
+        rel = url.split("sqlite:///", 1)[-1]
+        abs_path = (_PROJECT_ROOT / rel).resolve()
+        return f"sqlite:///{abs_path}"
+    return url
+
+
+DATABASE_URL: str = _resolve_database_url(settings.database_url)
 
 # SQLite needs check_same_thread=False; ignored by PostgreSQL
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -25,13 +44,15 @@ def _make_readonly_engine():
     controls should be enforced at the DB level instead.
     """
     if DATABASE_URL.startswith("sqlite"):
-        # Strip leading scheme so we can rebuild with URI flags.
-        # sqlite:///./scout.db  → file:scout.db?mode=ro&immutable=1
+        # Build a file: URI with read-only + immutable flags and hand it
+        # to sqlite3 directly via a creator function.  This avoids
+        # SQLAlchemy parsing the ?mode=ro&immutable=1 query string as
+        # its own parameters instead of passing them to the driver.
         path = DATABASE_URL.split("sqlite:///", 1)[-1]
         ro_uri = f"file:{path}?mode=ro&immutable=1"
         return create_engine(
-            f"sqlite:///{ro_uri}",
-            connect_args={"uri": True, "check_same_thread": False},
+            "sqlite://",
+            creator=lambda: sqlite3.connect(ro_uri, uri=True, check_same_thread=False),
         )
     return engine
 
