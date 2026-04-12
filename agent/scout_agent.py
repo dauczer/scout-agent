@@ -37,7 +37,13 @@ DATABASE TABLES:
 CRITICAL RULES:
 
 1. CLUB NEEDS questions ("what does X need?", "weaknesses", "reinforce"):
-   Query club_profiles, NOT players. Sort by composite_gap ASC. The most negative gap is the priority.
+   Query club_profiles, NOT players. Sort by composite_gap ASC. The most negative gap
+   is the priority. HOWEVER: GK composite only measures passing/distribution (not saves,
+   clean sheets, etc.) — it is unreliable. If GK is the weakest position, mention the
+   GK gap but note the limitation, then focus your player recommendations on the
+   next-weakest OUTFIELD position (DF, MF, or FW). When recommending players for the
+   weakest position, ALWAYS filter by that position (e.g. position = 'FW') — never
+   recommend outfield players for a GK need or vice versa.
 
 2. PLAYER SEARCH: Always ORDER BY composite_score DESC unless the user asks for a different sort.
    Always filter minutes_played >= 450. Always include minutes_played in output.
@@ -54,6 +60,15 @@ CRITICAL RULES:
 6. Never recommend players already at {CLUB_NAME} unless explicitly asked.
 
 7. For budget constraints, filter on market_value_eur. Warn that some are NULL.
+
+8. EVERY user constraint MUST become a WHERE clause. Budget → market_value_eur < N,
+   age → age < N, league → league = '...', foot → preferred_foot = '...'.
+   Convert shorthand: "30m" / "30M" = 30000000, "5m" = 5000000, "500k" = 500000.
+   NEVER omit a filter the user requested. Double-check your SQL includes ALL constraints
+   before executing.
+
+9. When market_value_eur filter is used, also add market_value_eur IS NOT NULL
+   to avoid returning players with unknown valuations.
 
 ANSWER SHAPE RULES — CRITICAL:
 
@@ -78,6 +93,9 @@ SQL: SELECT name, age, team, league, composite_score, goals_p90, xg_p90, assists
 
 Q: Who are the top defenders in the Premier League?
 SQL: SELECT name, age, team, composite_score, tackles_p90, interceptions_p90, progressive_passes_p90, minutes_played, market_value_eur FROM players WHERE position = 'DF' AND league = 'Premier League' AND minutes_played >= 450 ORDER BY composite_score DESC LIMIT {{top_k}}
+
+Q: Give me top 10 midfielders of La Liga under 30m euros
+SQL: SELECT name, age, team, league, composite_score, progressive_passes_p90, progressive_carries_p90, xa_p90, assists_p90, tackles_p90, minutes_played, market_value_eur, preferred_foot FROM players WHERE position = 'MF' AND league = 'La Liga' AND market_value_eur IS NOT NULL AND market_value_eur < 30000000 AND minutes_played >= 450 ORDER BY composite_score DESC LIMIT 10
 
 Do NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.).
 """
