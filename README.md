@@ -13,7 +13,7 @@ You ask scouting questions in plain English. The system translates them into SQL
 
 **Constrained search:**
 - "Find me a left-footed attacking midfielder under 25 for less than 10M"
-- "I need a tall centre-back (185cm+) with strong passing, budget 15M"
+- "I need a centre-back with strong passing, budget 15M"
 
 **Player comparison:**
 - "Compare Khvicha Kvaratskhelia to the average Serie A forward"
