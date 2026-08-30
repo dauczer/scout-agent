@@ -3,19 +3,20 @@ import hashlib
 import logging
 import time
 from functools import lru_cache
-from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
+from groq import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy import text
 
-from agent.scout_agent import scout_query
+from agent.schemas import ScoutResponse
+from agent.scout_agent import GeneratedQueryError, scout_query
 from config import settings
 from database.connection import SessionLocal, engine
 from database.models import ClubProfile, Player
@@ -57,12 +58,6 @@ class ScoutRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=500)
 
 
-class ScoutResponse(BaseModel):
-    type: str
-    data: list[dict[str, Any]]
-    summary: str
-
-
 @app.get("/health")
 @limiter.limit("60/minute")
 def health(request: Request):
@@ -82,7 +77,7 @@ def health(request: Request):
 
 
 @app.post("/scout", response_model=ScoutResponse)
-@limiter.limit("10/minute")
+@limiter.limit("3/minute")
 async def scout(request: Request, body: ScoutRequest, _: None = Depends(_require_scout_key)):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="question cannot be empty")
@@ -92,12 +87,31 @@ async def scout(request: Request, body: ScoutRequest, _: None = Depends(_require
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(scout_query, body.question),
-            timeout=50,
+            timeout=18,
         )
         logger.info("scout ok q=%s latency=%.2fs", q_hash, time.monotonic() - t0)
     except asyncio.TimeoutError:
         logger.warning("scout timeout q=%s latency=%.2fs", q_hash, time.monotonic() - t0)
         raise HTTPException(status_code=504, detail="The scouting query timed out. Please try a simpler question.")
+    except RateLimitError:
+        logger.warning("scout upstream rate limit q=%s", q_hash)
+        raise HTTPException(
+            status_code=503,
+            detail="The free scouting quota is temporarily busy. Please try again shortly.",
+            headers={"Retry-After": "30"},
+        )
+    except APITimeoutError:
+        logger.warning("scout upstream timeout q=%s", q_hash)
+        raise HTTPException(status_code=504, detail="The language model timed out. Please try again.")
+    except APIConnectionError:
+        logger.warning("scout upstream unavailable q=%s", q_hash)
+        raise HTTPException(status_code=503, detail="The scouting model is temporarily unavailable.")
+    except GeneratedQueryError:
+        logger.exception("scout generated SQL rejected q=%s", q_hash)
+        raise HTTPException(
+            status_code=502,
+            detail="A safe scouting query could not be generated. Please rephrase the question.",
+        )
     except Exception:
         logger.exception("scout error q=%s latency=%.2fs", q_hash, time.monotonic() - t0)
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
@@ -206,9 +220,9 @@ _SORTABLE = {
 @limiter.limit("60/minute")
 def players(
     request: Request,
-    league: Optional[str] = None,
-    position: Optional[str] = None,
-    team: Optional[str] = None,
+    league: str | None = None,
+    position: str | None = None,
+    team: str | None = None,
     min_minutes: int = Query(default=450, ge=0),
     sort: str = Query(default="composite_score"),
     limit: int = Query(default=50, ge=1, le=200),

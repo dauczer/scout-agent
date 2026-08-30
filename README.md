@@ -23,7 +23,7 @@ You ask scouting questions in plain English. The system translates them into SQL
 - "What's Nantes' weakest position and who are the 3 best affordable options to fix it?"
 - "Find a player similar to Amine Gouiri but cheaper"
 
-## Why a SQL agent (not RAG)
+## Why text-to-SQL (not RAG)
 
 This is a deliberate architectural choice, not a shortcut.
 
@@ -61,7 +61,7 @@ Nantes FW gap: -1.1  (well below — this is the problem)
 Nantes GK gap: +0.5  (solid)
 ```
 
-The agent uses this to answer "what does Nantes need?" and then searches for the best available players to fill that gap.
+The query planner uses this to answer "what does Nantes need?" and then searches for the best available players to fill that gap.
 
 ## Data flow
 
@@ -81,18 +81,17 @@ BUILD TIME (seed.py — runs once, offline)
 RUNTIME (per request)
 ======================
 
- Frontend ──► POST /scout ──► FastAPI ──► LangChain SQL Agent ──► SQLite (read-only)
-                  │                             │
-                  │                        LLM call 1:
-                  │                        NL → SQL → execute → reason
-                  │                             │
-                  │                        LLM call 2:
-                  │                        raw text → structured JSON
-                  │                             │
-                  ◄──── JSON { type, data, summary }
+ Frontend ──► POST /scout ──► one structured LLM plan ──► SQL AST validator
+                  │                                              │
+                  │                                      SQLite (read-only)
+                  │                                              │
+                  │                           deterministic table JSON
+                  │                           or optional short narrative
+                  │                                              │
+                  ◄──── JSON { type, data, summary, sql } ◄──────┘
 ```
 
-All expensive computation (fuzzy matching, z-scores, composites) happens at build time. The runtime agent only runs SQL queries and reasons about results.
+All expensive computation (fuzzy matching, z-scores, composites) happens at build time. At runtime, the LLM makes one bounded planning call. SQL parsing, policy checks, execution, row limiting, and table formatting are local and deterministic. A second LLM call is used only when a narrative is more useful than a table.
 
 ## Tech stack
 
@@ -101,8 +100,9 @@ All expensive computation (fuzzy matching, z-scores, composites) happens at buil
 | Data | FBref + Transfermarkt (Kaggle CSVs) | Pre-downloaded, Big 5 leagues, 2024-25 season |
 | Matching | `rapidfuzz` | Two-pass fuzzy matching: club-scoped first, league-wide fallback |
 | Database | SQLite via SQLAlchemy | ~700 KB, committed to repo, zero setup |
-| Agent | LangChain SQL Agent | Tool-calling architecture with read-only DB access |
-| LLM | Groq (Llama 3.3 70B) | Free tier, temperature=0 for deterministic SQL generation |
+| Query planning | Groq SDK + strict JSON Schema | One structured plan, with one correction attempt only if local validation fails |
+| SQL safety | `sqlglot` | Parses and validates the SQL AST before execution |
+| LLM | Groq (`openai/gpt-oss-20b`) | Fast free-tier model; lower cost and latency are prioritized over maximum reasoning quality |
 | API | FastAPI | CORS, rate limiting, optional API key auth |
 | Deployment | Render | SQLite ships with the repo — read-only at runtime |
 
@@ -134,14 +134,18 @@ All expensive computation (fuzzy matching, z-scores, composites) happens at buil
 
 ```json
 {
-  "type": "table | text",
-  "data": [{ "...": "..." }],
-  "summary": "One-line summary of the answer"
+  "type": "table",
+  "data": [
+    {"name": "Ousmane Dembélé", "team": "Paris S-G", "composite_score": 2.3961}
+  ],
+  "summary": "Found 1 result: Ousmane Dembélé.",
+  "sql": "SELECT ... LIMIT 1"
 }
 ```
 
 - `"table"` — player searches, top-N lists. `data` rows share consistent keys.
-- `"text"` — club diagnostics, narratives. `data` is `[{"text": "<markdown>"}]`.
+- `"text"` — clarification, unsupported questions, or club diagnostics. `data` is `[{"text": "..."}]`.
+- `"sql"` — the validated query that actually ran, or `null` when no query was needed. It is exposed intentionally for portfolio transparency.
 
 ### Example
 
@@ -158,7 +162,7 @@ curl -X POST /scout \
 ## Local setup
 
 ```bash
-git clone <repo-url> && cd gdb_scout
+git clone https://github.com/dauczer/scout-agent.git && cd scout-agent
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
@@ -168,15 +172,22 @@ uvicorn api.main:app --reload
 
 That's it. `scout.db` ships with the repo — no database server, no migrations, no seed step.
 
+### Zero-cost operating profile
+
+The default configuration uses Groq's Free Plan and does not require a paid model account. Groq currently lists `openai/gpt-oss-20b` at 30 requests/minute, 1,000 requests/day, 8,000 tokens/minute, and 200,000 tokens/day on that plan; the exact limits attached to an account remain authoritative and may change. See the official [rate-limit table](https://console.groq.com/docs/rate-limits) and [model page](https://console.groq.com/docs/model/openai/gpt-oss-20b).
+
+The application normally spends one LLM request per new table question, caches repeated normalized questions in memory, limits public requests to three per minute per client, and uses [strict JSON Schema output](https://console.groq.com/docs/structured-outputs). This keeps the demo at zero monetary cost, but it does not promise uninterrupted availability: when the shared daily or token quota is exhausted, `/scout` returns HTTP 503 and asks the visitor to retry later.
+
 ### Environment variables
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `DATABASE_URL` | Yes | — | SQLAlchemy connection string |
 | `GROQ_API_KEY` | Yes | — | LLM API key (free at console.groq.com) |
+| `GROQ_MODEL` | No | `"openai/gpt-oss-20b"` | Groq model used for query planning and optional narratives |
 | `ALLOWED_ORIGIN` | Yes | — | Single CORS origin for the frontend |
 | `SCOUT_API_KEY` | No | `None` | API key for `/scout`; auth disabled when unset |
-| `CLUB_NAME` | No | `"Paris Saint-Germain"` | Default club context for the agent |
+| `CLUB_NAME` | No | `"Paris S-G"` | Default club context, using the canonical database name |
 | `CLUB_LEAGUE` | No | `"Ligue 1"` | Default league context |
 | `SEASON` | No | `"2425"` | Season filter |
 
@@ -199,19 +210,25 @@ git add scout.db && git commit -m "reseed: 2024-25 data"
 
 ## Security model
 
-The agent connects to SQLite via `?mode=ro&immutable=1` — a driver-level guarantee that DML is rejected before execution. This isn't a prompt asking the LLM to behave; it's a hard technical enforcement. Even if someone prompt-injects the agent into generating `DROP TABLE`, the sqlite3 driver returns an error.
+Generated SQL is parsed locally before it can reach SQLite. The validator accepts exactly one bounded `SELECT`/`WITH` query, allowlists the three tables and every column, rejects recursive CTEs and administrative or mutating statements, checks canonical enum values, and enforces a maximum of 20 rows. If the first plan is invalid, the model receives the validator error and gets one correction attempt.
 
-Other layers: CORS locked to a single origin, rate limiting (10/min on `/scout`), optional API key auth, input validation (3-500 chars), 50-second request timeout, generic error messages (no stack traces leaked).
+SQLite is also opened in read-only immutable mode, and each query has a two-second execution deadline. These are independent protections: safety does not depend on the model following its prompt.
+
+The API adds a three-request-per-minute `/scout` limit, optional shared-key authentication, 3–500 character input validation, an 18-second request timeout, single-origin CORS, and generic public errors. Groq SDK retries are disabled so a free-tier quota error returns quickly as HTTP 503 instead of creating a slow retry loop.
 
 ## Known limitations
 
-**GK composite scores are incomplete.** FBref outfield stats don't include saves, clean sheets, or shot-stopping metrics. The GK composite only measures distribution quality via passing. The agent prompt acknowledges this and de-prioritizes GK findings.
+**GK composite scores are incomplete.** FBref outfield stats don't include saves, clean sheets, or shot-stopping metrics. The GK composite only measures distribution quality via passing. The query planner acknowledges this and de-prioritizes GK findings.
 
 **~15% of players lack Transfermarkt data.** Fuzzy matching between FBref and Transfermarkt covers ~85% of players. The rest still have all FBref stats but no market value, preferred foot, or height. Budget-filtered queries exclude these players by necessity.
 
-**Four broad position groups.** The data layer uses GK, DF, MF, FW. It doesn't distinguish centre-backs from fullbacks or attacking midfielders from defensive midfielders. The agent compensates in its reasoning — when you ask for a "ball-playing CB," it knows to emphasize progressive passes within the DF group — but the composite scores can't capture sub-role nuance.
+**Four broad position groups.** The data layer uses GK, DF, MF, FW. It cannot distinguish centre-backs from fullbacks or attacking midfielders from defensive midfielders. The query planner maps role names to the nearest broad group and makes this limitation explicit; it cannot reliably satisfy a true sub-role filter.
 
 **The 450-minute filter removes young prospects.** Promising players with limited minutes are excluded to reduce statistical noise. This is a trade-off: reliability over discovery.
+
+**The zero-cost LLM is an explicit portfolio trade-off.** `openai/gpt-oss-20b` is smaller than premium frontier models, so complex or unusually phrased questions may need rewording. The architecture compensates by asking the model for only a structured query plan and handling validation, execution, and table formatting deterministically. The free Groq quota can still be temporarily exhausted; the API then returns a clear retryable 503 response.
+
+**The dataset is static.** Results describe the included 2024-25 snapshot, not current squads or valuations. Repeated identical questions are cached in-process to avoid spending free quota, but the cache is cleared when the service restarts.
 
 ## In production, this would be...
 
@@ -223,8 +240,8 @@ This is a portfolio project. Here's what would change at scale:
 | `rapidfuzz` matching | Probabilistic record linkage (Splink) with human-in-the-loop review |
 | Hardcoded position weights | Feature store (Feast/Tecton) with versioning and A/B testing |
 | SQLite committed to repo | PostgreSQL with read replicas (same SQLAlchemy code, just swap `DATABASE_URL`) |
-| Groq free tier | Azure OpenAI / Bedrock with fallback routing and cost monitoring |
-| `verbose=True` stdout logs | LLM observability (LangSmith, Helicone) with trace IDs and eval suites |
+| Groq free tier, one compact model | Multi-provider fallback routing with cost monitoring and an evaluation-gated model policy |
+| Structured application logs | LLM observability with trace IDs, redaction, and evaluation suites |
 | Optional shared API key | OAuth2/JWT with per-user identity and audit logging |
 | In-process rate limiting | Distributed rate limiter (Redis-backed or API Gateway-level) |
-| No query cache | Redis cache keyed by question hash — repeated questions skip LLM calls entirely |
+| In-process LRU query cache | Redis cache keyed by normalized question — shared across service replicas |

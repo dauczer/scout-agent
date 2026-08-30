@@ -14,7 +14,6 @@ import logging
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -192,7 +191,7 @@ CLUB_NAME_MAP: dict[str, str] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _safe_float(val) -> Optional[float]:
+def _safe_float(val) -> float | None:
     try:
         f = float(val)
         return f if not pd.isna(f) else None
@@ -200,12 +199,19 @@ def _safe_float(val) -> Optional[float]:
         return None
 
 
-def _safe_int(val) -> Optional[int]:
+def _safe_int(val) -> int | None:
     f = _safe_float(val)
     return int(f) if f is not None else None
 
 
-def _normalise_position(pos_raw: Optional[str]) -> str:
+def _per90(row: pd.Series, col_key: str, nineties: float) -> float | None:
+    raw = _safe_float(row.get(FBREF_COLS[col_key]))
+    if raw is None:
+        return None
+    return round(raw / nineties, 4)
+
+
+def _normalise_position(pos_raw: str | None) -> str:
     if not pos_raw:
         return "MF"
     primary = str(pos_raw).split(",")[0].strip().upper()
@@ -384,7 +390,7 @@ def _match_fbref_to_tm(
     return enrichment
 
 
-def _map_foot(val) -> Optional[str]:
+def _map_foot(val) -> str | None:
     if pd.isna(val) or not val:
         return None
     v = str(val).strip().lower()
@@ -424,13 +430,6 @@ def _seed_players(enrichment: dict[tuple[str, str], dict]) -> int:
         if not nineties or nineties <= 0:
             continue
 
-        # Compute per-90 from raw totals
-        def per90(col_key: str) -> Optional[float]:
-            raw = _safe_float(row.get(FBREF_COLS[col_key]))
-            if raw is None:
-                return None
-            return round(raw / nineties, 4)
-
         # TM enrichment
         tm = enrichment.get((name, team), {})
 
@@ -445,15 +444,15 @@ def _seed_players(enrichment: dict[tuple[str, str], dict]) -> int:
             "minutes_played": minutes,
             "matches_played": _safe_int(row.get(FBREF_COLS["mp"])),
             # Per-90 stats
-            "goals_p90": per90("goals"),
-            "assists_p90": per90("assists"),
-            "xg_p90": per90("xg"),
-            "xa_p90": per90("xag"),
-            "progressive_carries_p90": per90("prgc"),
-            "progressive_passes_p90": per90("prgp"),
-            "dribbles_completed_p90": per90("dribbles"),
-            "tackles_p90": per90("tackles"),
-            "interceptions_p90": per90("interceptions"),
+            "goals_p90": _per90(row, "goals", nineties),
+            "assists_p90": _per90(row, "assists", nineties),
+            "xg_p90": _per90(row, "xg", nineties),
+            "xa_p90": _per90(row, "xag", nineties),
+            "progressive_carries_p90": _per90(row, "prgc", nineties),
+            "progressive_passes_p90": _per90(row, "prgp", nineties),
+            "dribbles_completed_p90": _per90(row, "dribbles", nineties),
+            "tackles_p90": _per90(row, "tackles", nineties),
+            "interceptions_p90": _per90(row, "interceptions", nineties),
             # Direct percentages
             "pass_completion_pct": _safe_float(row.get(FBREF_COLS["cmp_pct"])),
             "shot_on_target_pct": _safe_float(row.get(FBREF_COLS["sot_pct"])),

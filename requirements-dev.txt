@@ -3,3 +3,4 @@ httpx
 pip-audit
 pytest
 pytest-asyncio
+ruff==0.16.5

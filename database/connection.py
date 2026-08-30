@@ -1,10 +1,10 @@
 import pathlib
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from config import settings
 
@@ -80,5 +80,6 @@ def init_db() -> None:
     schema is present before data is loaded.  The API never calls this —
     it relies on the pre-seeded ``scout.db`` that ships with the repo.
     """
-    from database.models import Base  # noqa: F401 — ensures models are registered
+    from database.models import Base
+
     Base.metadata.create_all(bind=engine)

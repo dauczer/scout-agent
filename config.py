@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
+
 from database.constants import DEFAULT_SEASON
 
 load_dotenv()
@@ -20,6 +21,7 @@ load_dotenv()
 class Settings:
     database_url: str
     groq_api_key: str
+    groq_model: str
     allowed_origin: str
     club_name: str
     club_league: str
@@ -50,8 +52,9 @@ def get_settings() -> Settings:
     return Settings(
         database_url=database_url,  # type: ignore[arg-type]  # checked above
         groq_api_key=groq_api_key,  # type: ignore[arg-type]
+        groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
         allowed_origin=allowed_origin,  # type: ignore[arg-type]
-        club_name=os.getenv("CLUB_NAME", "Paris Saint-Germain"),
+        club_name=os.getenv("CLUB_NAME", "Paris S-G"),
         club_league=os.getenv("CLUB_LEAGUE", "Ligue 1"),
         season=os.getenv("SEASON", DEFAULT_SEASON),
         scout_api_key=os.getenv("SCOUT_API_KEY") or None,

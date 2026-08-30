@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Index, Integer, String, Float, UniqueConstraint
+from sqlalchemy import Column, Float, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase
 
 

@@ -9,9 +9,11 @@ services:
       - key: DATABASE_URL
         value: sqlite:///./scout.db
       - key: CLUB_NAME
-        value: Paris Saint-Germain
+        value: Paris S-G
       - key: CLUB_LEAGUE
         value: Ligue 1
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
       - key: GROQ_API_KEY
         sync: false
       - key: ALLOWED_ORIGIN

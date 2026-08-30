@@ -48,3 +48,22 @@ def test_players_league_filter_limit(client):
     assert len(players) == 5
     for p in players:
         assert p["league"] == "Ligue 1"
+
+
+def test_scout_response_includes_sql(monkeypatch, client):
+    monkeypatch.setattr(
+        "api.main.scout_query",
+        lambda question: {
+            "type": "table",
+            "data": [{"name": "Test Player", "market_value_eur": 1000000}],
+            "summary": "Found one test player.",
+            "sql": "SELECT name, market_value_eur FROM players LIMIT 1",
+        },
+    )
+
+    response = client.post("/scout", json={"question": "find a test player"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sql"].startswith("SELECT")
+    assert body["data"][0]["market_value_eur"] == 1000000

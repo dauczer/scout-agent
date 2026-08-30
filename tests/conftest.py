@@ -22,6 +22,7 @@ def client():
     before api.main is loaded.
     """
     from fastapi.testclient import TestClient
+
     from api.main import app
 
     return TestClient(app)

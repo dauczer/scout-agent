@@ -26,9 +26,7 @@ jobs:
         run: python -m compileall -q .
 
       - name: Lint (ruff)
-        run: |
-          pip install -q ruff
-          ruff check .
+        run: ruff check .
 
       - name: Test
         env:

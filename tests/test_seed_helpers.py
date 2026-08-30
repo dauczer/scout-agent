@@ -1,13 +1,6 @@
 """Unit tests for pure helper functions — no DB, no LLM."""
-import os
-
-# Ensure env vars are set before any config import (mirrors conftest.py).
-os.environ.setdefault("DATABASE_URL", "sqlite:///./scout.db")
-os.environ.setdefault("GROQ_API_KEY", "test-key")
-os.environ.setdefault("ALLOWED_ORIGIN", "http://localhost:3000")
-
-from database.seed import _normalise_position  # noqa: E402
-from database.weights import compute_composite  # noqa: E402
+from database.seed import _normalise_position
+from database.weights import compute_composite
 
 
 class TestNormalisePosition:
