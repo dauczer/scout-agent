@@ -185,7 +185,7 @@ The application normally spends one LLM request per new table question, caches r
 | `DATABASE_URL` | Yes | — | SQLAlchemy connection string |
 | `GROQ_API_KEY` | Yes | — | LLM API key (free at console.groq.com) |
 | `GROQ_MODEL` | No | `"openai/gpt-oss-20b"` | Groq model used for query planning and optional narratives |
-| `ALLOWED_ORIGIN` | Yes | — | Single CORS origin for the frontend |
+| `ALLOWED_ORIGINS` | No | Portfolio and Vite origins | Additional comma-separated CORS origins; the root domain, `www`, `localhost:5173` and `127.0.0.1:5173` are always allowed |
 | `SCOUT_API_KEY` | No | `None` | API key for `/scout`; auth disabled when unset |
 | `CLUB_NAME` | No | `"Paris S-G"` | Default club context, using the canonical database name |
 | `CLUB_LEAGUE` | No | `"Ligue 1"` | Default league context |

@@ -16,13 +16,20 @@ from database.constants import DEFAULT_SEASON
 
 load_dotenv()
 
+REQUIRED_WEB_ORIGINS = (
+    "https://alexdaucourt.dev",
+    "https://www.alexdaucourt.dev",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
 
 @dataclass(frozen=True)
 class Settings:
     database_url: str
     groq_api_key: str
     groq_model: str
-    allowed_origin: str
+    allowed_origins: tuple[str, ...]
     club_name: str
     club_league: str
     season: str
@@ -40,9 +47,9 @@ def get_settings() -> Settings:
     if not groq_api_key:
         errors.append("GROQ_API_KEY")
 
-    allowed_origin = os.getenv("ALLOWED_ORIGIN")
-    if not allowed_origin:
-        errors.append("ALLOWED_ORIGIN")
+    raw_origins = os.getenv("ALLOWED_ORIGINS", os.getenv("ALLOWED_ORIGIN", ""))
+    configured_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    allowed_origins = tuple(dict.fromkeys((*REQUIRED_WEB_ORIGINS, *configured_origins)))
 
     if errors:
         raise RuntimeError(
@@ -53,7 +60,7 @@ def get_settings() -> Settings:
         database_url=database_url,  # type: ignore[arg-type]  # checked above
         groq_api_key=groq_api_key,  # type: ignore[arg-type]
         groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
-        allowed_origin=allowed_origin,  # type: ignore[arg-type]
+        allowed_origins=allowed_origins,
         club_name=os.getenv("CLUB_NAME", "Paris S-G"),
         club_league=os.getenv("CLUB_LEAGUE", "Ligue 1"),
         season=os.getenv("SEASON", DEFAULT_SEASON),

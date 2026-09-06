@@ -1,5 +1,42 @@
 """API smoke tests — exercise real routes against the committed scout.db."""
 
+import pytest
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://alexdaucourt.dev",
+        "https://www.alexdaucourt.dev",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
+def test_preflight_allows_portfolio_and_local_origins(client, origin):
+    response = client.options(
+        "/scout",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,accept-language",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_preflight_rejects_unknown_origin(client):
+    response = client.options(
+        "/scout",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert "access-control-allow-origin" not in response.headers
+
 
 def test_health_ok(client):
     r = client.get("/health")
